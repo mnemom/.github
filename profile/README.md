@@ -10,6 +10,8 @@ Mnemom builds trust infrastructure for AI agents. Every decision an agent makes 
 
 **[Agent Integrity Protocol (AIP)](https://github.com/mnemom/aip)** — Real-time thinking block analysis for AI agent alignment. AIP analyzes what an agent is thinking before it acts, delivering integrity verdicts between turns. Sister protocol to AAP — same Alignment Card, different timescale.
 
+**[aip-otel-exporter](https://github.com/mnemom/aip-otel-exporter)** — OpenTelemetry exporter for AIP and AAP. Send integrity verdicts, verification results, coherence scores, and drift alerts to any OTel-compatible platform — Langfuse, Arize Phoenix, Datadog, Grafana — with zero custom code. Available on [npm](https://www.npmjs.com/package/@mnemom/aip-otel-exporter) and [PyPI](https://pypi.org/project/aip-otel-exporter/).
+
 **[smoltbot](https://github.com/mnemom/smoltbot)** — Transparent AI agent tracing, AAP-compliant. Drop-in observability that captures what your agent thinks, decides, and does — then verifies it against its alignment card.
 
 ### Learn more
