@@ -1,0 +1,81 @@
+name: Org Hardening Sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Comma-separated list of repos to sweep"
+        required: false
+        default: "smoltbot,mnemom-api,mnemom-reputation,mnemom-risk,deploy,mnemom-contracts,mnemom-prover,aip,aap,mnemom-types,aip-otel-exporter,mnemom-website,reputation-check,hunter"
+        type: string
+  schedule:
+    - cron: "0 8 * * 1"
+
+jobs:
+  sweep:
+    name: Hardening Sweep
+    runs-on: ubuntu-latest
+    env:
+      ORG: mnemom
+      REPOS: ${{ inputs.repos || 'smoltbot,mnemom-api,mnemom-reputation,mnemom-risk,deploy,mnemom-contracts,mnemom-prover,aip,aap,mnemom-types,aip-otel-exporter,mnemom-website,reputation-check,hunter' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run hardening checks
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          IFS=',' read -ra REPO_LIST <<< "$REPOS"
+
+          echo "| Repo | CI Dispatch | Branch Protection | Dependabot | CodeQL Alerts | Secret Scanning |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-------------|-------------------|------------|---------------|-----------------|" >> "$GITHUB_STEP_SUMMARY"
+
+          for repo in "${REPO_LIST[@]}"; do
+            repo=$(echo "$repo" | xargs)
+            echo "::group::Checking $repo"
+
+            # Dispatch CI
+            ci_status="N/A"
+            if gh workflow run ci.yml --repo "$ORG/$repo" 2>/dev/null; then
+              ci_status="dispatched"
+            fi
+
+            # Branch protection
+            bp_status="none"
+            bp_json=$(gh api "repos/$ORG/$repo/branches/main/protection" 2>/dev/null || echo "")
+            if [ -n "$bp_json" ] && echo "$bp_json" | jq -e '.required_pull_request_reviews' >/dev/null 2>&1; then
+              bp_status="enabled"
+            fi
+
+            # Dependabot
+            dependabot_status="disabled"
+            db_json=$(gh api "repos/$ORG/$repo/vulnerability-alerts" 2>/dev/null && echo "enabled" || echo "disabled")
+            dependabot_status="$db_json"
+
+            # CodeQL alerts
+            codeql_count="N/A"
+            codeql_json=$(gh api "repos/$ORG/$repo/code-scanning/alerts?state=open&per_page=1" 2>/dev/null || echo "")
+            if [ -n "$codeql_json" ]; then
+              codeql_count=$(echo "$codeql_json" | jq 'length' 2>/dev/null || echo "N/A")
+            fi
+
+            # Secret scanning
+            secret_status="disabled"
+            ss_json=$(gh api "repos/$ORG/$repo/secret-scanning/alerts?per_page=1" 2>/dev/null || echo "")
+            if [ -n "$ss_json" ]; then
+              secret_status="enabled"
+            fi
+
+            # Determine pass/fail icons
+            bp_icon="$( [ "$bp_status" = "enabled" ] && echo "pass" || echo "FAIL" )"
+            db_icon="$( [ "$dependabot_status" = "enabled" ] && echo "pass" || echo "FAIL" )"
+            codeql_icon="$( [ "$codeql_count" = "0" ] && echo "pass" || echo "$codeql_count" )"
+            ss_icon="$( [ "$secret_status" = "enabled" ] && echo "pass" || echo "FAIL" )"
+
+            echo "| $repo | $ci_status | $bp_icon | $db_icon | $codeql_icon | $ss_icon |" >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::endgroup::"
+          done
+
+          echo ""
+          echo "Sweep complete. See job summary for results."
