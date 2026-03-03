@@ -8,13 +8,13 @@ on:
         required: false
         type: string
         default: "npm"
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  schedule:
-    - cron: "0 8 * * 1"
   workflow_dispatch:
+    inputs:
+      package-manager:
+        description: "Package manager to audit (npm or pip)"
+        required: false
+        type: string
+        default: "npm"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
