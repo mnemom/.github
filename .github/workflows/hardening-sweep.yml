@@ -6,7 +6,7 @@ on:
       repos:
         description: "Comma-separated list of repos to sweep"
         required: false
-        default: "smoltbot,mnemom-api,mnemom-reputation,mnemom-risk,deploy,mnemom-contracts,mnemom-prover,aip,aap,mnemom-types,aip-otel-exporter,mnemom-website,reputation-check,hunter"
+        default: "mnemom-platform,mnemom-api,mnemom-reputation,mnemom-risk,deploy,mnemom-contracts,mnemom-prover,aip,aap,mnemom-types,aip-otel-exporter,mnemom-website,reputation-check,hunter"
         type: string
   schedule:
     - cron: "0 8 * * 1"
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ORG: mnemom
-      REPOS: ${{ inputs.repos || 'smoltbot,mnemom-api,mnemom-reputation,mnemom-risk,deploy,mnemom-contracts,mnemom-prover,aip,aap,mnemom-types,aip-otel-exporter,mnemom-website,reputation-check,hunter' }}
+      REPOS: ${{ inputs.repos || 'mnemom-platform,mnemom-api,mnemom-reputation,mnemom-risk,deploy,mnemom-contracts,mnemom-prover,aip,aap,mnemom-types,aip-otel-exporter,mnemom-website,reputation-check,hunter' }}
     steps:
       - uses: actions/checkout@v4
 
