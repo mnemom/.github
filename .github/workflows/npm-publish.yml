@@ -105,6 +105,15 @@ jobs:
           path: ${{ inputs.npm-directory }}
           format: cyclonedx-json
           output-file: sbom.cdx.json
+          # Disable anchore's auto-attach to releases so we control naming.
+          # The action defaults to upload-release-assets: true, which produces
+          # `{repo}-{job}.cyclonedx.json` — ambiguous for monorepos that publish
+          # multiple packages per release. Our custom "Attach SBOM to GitHub
+          # Release" step below uses `sbom-{pkg-slug}-{version}.cdx.json`.
+          upload-release-assets: false
+          # Also disable anchore's auto-upload-artifact so we don't duplicate
+          # the `Upload SBOM as workflow artifact` step below.
+          upload-artifact: false
 
       - name: Upload SBOM as workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
