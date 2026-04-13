@@ -87,6 +87,12 @@ jobs:
           fi
           echo "pkg-name=$PKG_NAME" >> "$GITHUB_OUTPUT"
           echo "pkg-version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          # Sanitized name safe for filesystem + GitHub Actions artifact names
+          # (strip leading @, replace / with -). Scoped packages like
+          # @mnemom/types would otherwise produce "sbom-@mnemom/types-0.5.1"
+          # which contains chars disallowed in upload-artifact names.
+          PKG_SLUG=$(echo "$PKG_NAME" | sed 's|^@||; s|/|-|g')
+          echo "pkg-slug=$PKG_SLUG" >> "$GITHUB_OUTPUT"
 
       - name: Publish
         if: steps.check.outputs.skip != 'true'
@@ -103,7 +109,7 @@ jobs:
       - name: Upload SBOM as workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sbom-${{ steps.check.outputs.pkg-name }}-${{ steps.check.outputs.pkg-version }}
+          name: sbom-${{ steps.check.outputs.pkg-slug }}-${{ steps.check.outputs.pkg-version }}
           path: sbom.cdx.json
 
       - name: Attach SBOM to GitHub Release
@@ -111,10 +117,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Rename so the uploaded asset is uniquely identifiable per package
-          # (important for monorepos that may publish multiple packages per release)
-          ASSET_NAME="sbom-${{ steps.check.outputs.pkg-name }}-${{ steps.check.outputs.pkg-version }}.cdx.json"
-          # Strip leading @ and replace / to keep the filename shell-friendly
-          ASSET_NAME=$(echo "$ASSET_NAME" | sed 's|@||; s|/|-|g')
+          # Per-package asset name (important for monorepos that may publish
+          # multiple packages against one release).
+          ASSET_NAME="sbom-${{ steps.check.outputs.pkg-slug }}-${{ steps.check.outputs.pkg-version }}.cdx.json"
           cp sbom.cdx.json "$ASSET_NAME"
           gh release upload "${{ github.event.release.tag_name }}" "$ASSET_NAME" --clobber
