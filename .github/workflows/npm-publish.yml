@@ -1,0 +1,120 @@
+name: Reusable — npm publish with provenance + SBOM
+
+# Canonical publish workflow for all @mnemom/* npm packages.
+#
+# Called via `uses: mnemom/.github/.github/workflows/npm-publish.yml@<sha>` from
+# a thin per-repo publish.yml. Owns the full supply-chain recipe:
+#   - Node 24 + actions/setup-node@v6 + registry-url (required for npm OIDC
+#     Trusted Publisher with --provenance — Node 20/22 silently falls back to
+#     token auth; see rationale block below)
+#   - npm publish --access public --provenance --tag <input>
+#   - CycloneDX SBOM generation + upload as workflow artifact
+#   - Conditional attach SBOM to GitHub Release when caller is release-triggered
+#
+# Why reusable: prior to this, 5 repos hand-maintained copies of the recipe.
+# One drifted (mnemom-types: Node 22, setup-node@v4, no registry-url) and
+# shipped @mnemom/types@0.5.0 without provenance. ADR-020 records the decision.
+
+on:
+  workflow_call:
+    inputs:
+      npm-directory:
+        description: "Directory containing package.json to publish"
+        required: true
+        type: string
+      dispatch-id:
+        description: "Correlation ID from deploy orchestrator (optional)"
+        required: false
+        type: string
+      tag:
+        description: "npm dist-tag (e.g., latest, next)"
+        required: false
+        type: string
+        default: "latest"
+      attach-sbom-to-release:
+        description: "When true AND caller was triggered by a release event, upload SBOM as a release asset"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.npm-directory }}
+    permissions:
+      contents: write   # needed for gh release upload (release-triggered callers only)
+      id-token: write   # OIDC → npm Trusted Publisher
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          # Node 24 ships with npm 11.5.1+ which is required for OIDC Trusted
+          # Publisher publishing to work correctly.
+          #
+          # registry-url is needed: it creates an .npmrc with NODE_AUTH_TOKEN="".
+          # With npm 11.5.1+, an empty NODE_AUTH_TOKEN causes npm to fall back
+          # to the OIDC exchange automatically (using ACTIONS_ID_TOKEN_REQUEST_URL).
+          # This is the correct behavior for Trusted Publisher publishing.
+          #
+          # With npm <11 (Node 20/22): empty NODE_AUTH_TOKEN causes E404 (npm
+          # tries to auth with an empty bearer token). Without registry-url at
+          # all: ENEEDAUTH (npm v10 doesn't auto-detect OIDC). Node 24 +
+          # registry-url is the correct combo.
+
+      - name: Install and build
+        working-directory: ${{ inputs.npm-directory }}
+        run: |
+          npm ci || npm install
+          npm run build --if-present
+
+      - name: Check if already published
+        id: check
+        working-directory: ${{ inputs.npm-directory }}
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "${PKG_NAME}@${PKG_VERSION}" version 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$PKG_VERSION" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$PKG_NAME@$PKG_VERSION already published — skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Will publish $PKG_NAME@$PKG_VERSION with tag ${{ inputs.tag }}"
+          fi
+          echo "pkg-name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+          echo "pkg-version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        if: steps.check.outputs.skip != 'true'
+        working-directory: ${{ inputs.npm-directory }}
+        run: npm publish --access public --provenance --tag "${{ inputs.tag }}"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        with:
+          path: ${{ inputs.npm-directory }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+
+      - name: Upload SBOM as workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-${{ steps.check.outputs.pkg-name }}-${{ steps.check.outputs.pkg-version }}
+          path: sbom.cdx.json
+
+      - name: Attach SBOM to GitHub Release
+        if: ${{ github.event_name == 'release' && inputs.attach-sbom-to-release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Rename so the uploaded asset is uniquely identifiable per package
+          # (important for monorepos that may publish multiple packages per release)
+          ASSET_NAME="sbom-${{ steps.check.outputs.pkg-name }}-${{ steps.check.outputs.pkg-version }}.cdx.json"
+          # Strip leading @ and replace / to keep the filename shell-friendly
+          ASSET_NAME=$(echo "$ASSET_NAME" | sed 's|@||; s|/|-|g')
+          cp sbom.cdx.json "$ASSET_NAME"
+          gh release upload "${{ github.event.release.tag_name }}" "$ASSET_NAME" --clobber

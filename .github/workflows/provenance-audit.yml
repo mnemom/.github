@@ -1,0 +1,56 @@
+name: Weekly provenance audit
+
+# Weekly integrity check on all @mnemom/* npm packages: installs the current
+# `latest` of each into a scratch project and runs `npm audit signatures`,
+# which verifies both registry signatures and SLSA provenance attestations.
+# Fails loudly and (in the enabled version) opens an issue if any package has
+# regressed off provenance.
+#
+# STATUS: DISABLED (workflow_dispatch only). Part of Scale Step 29a — will be
+# enabled (add schedule trigger + issue-opening step) in the follow-up step.
+# Shipped disabled alongside Step 29 so the file exists in the canonical location
+# and reviewers see the shape before we turn it on.
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "0 8 * * 1"   # Mondays 08:00 UTC — enable in Step 29a
+
+permissions: {}
+
+jobs:
+  audit:
+    name: Audit @mnemom/* provenance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: "24"
+
+      - name: Install all @mnemom/* packages into a scratch project
+        run: |
+          mkdir -p /tmp/audit && cd /tmp/audit
+          npm init -y >/dev/null
+          # Keep this list in sync with org packages published under @mnemom/*.
+          npm install --no-save \
+            @mnemom/agent-alignment-protocol \
+            @mnemom/agent-integrity-protocol \
+            @mnemom/aip-otel-exporter \
+            @mnemom/policy-engine \
+            @mnemom/mnemom \
+            @mnemom/types
+
+      - name: npm audit signatures (verifies sigs + attestations)
+        working-directory: /tmp/audit
+        run: |
+          set -o pipefail
+          npm audit signatures 2>&1 | tee audit.out
+          # Fail the job if any @mnemom/* package is missing attestations.
+          # `npm audit signatures` exits non-zero on unverified signatures, but
+          # we also grep defensively in case npm's output format changes.
+          if grep -E "missing attestations|unverified" audit.out >/dev/null; then
+            echo "::error::One or more @mnemom/* packages failed provenance audit"
+            exit 1
+          fi
