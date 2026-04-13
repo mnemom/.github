@@ -1,0 +1,80 @@
+name: Reusable — Dependabot auto-merge
+
+# Canonical auto-merge recipe for Dependabot PRs across @mnemom/* repos.
+#
+# Called via `uses: mnemom/.github/.github/workflows/dependabot-auto-merge.yml@<sha>`
+# from a thin per-repo `.github/workflows/dependabot-auto-merge.yml` triggered on
+# `pull_request_target`.
+#
+# Behavior:
+#   - Restricts to PRs authored by dependabot[bot].
+#   - Reads update-type from Dependabot's PR metadata via dependabot/fetch-metadata.
+#   - Enables `gh pr merge --auto --squash` for patch/minor bumps (configurable).
+#   - Major bumps (`version-update:semver-major`) are skipped — they require
+#     human review because they may break APIs.
+#
+# Trust model:
+#   - `pull_request_target` runs the workflow file from the BASE branch, not the
+#     PR branch. A malicious Dependabot PR can't modify this workflow mid-flight.
+#   - We never `actions/checkout` the PR code — no install/run of untrusted code.
+#   - We never pass GITHUB_TOKEN to the PR's build; token scope is contents:write
+#     + pull-requests:write on the caller repo only.
+#   - Branch protection required status checks are load-bearing: auto-merge waits
+#     for all required checks to pass before actually merging.
+#
+# See Scale Step 29 cleanup / Parking Lot for why this exists and the ADR-006
+# 18-month deprecation window context.
+
+on:
+  workflow_call:
+    inputs:
+      allowed-update-types:
+        description: "Comma-separated semver update-types eligible for auto-merge"
+        required: false
+        type: string
+        default: "version-update:semver-patch,version-update:semver-minor"
+      merge-method:
+        description: "gh pr merge method: --squash, --merge, or --rebase"
+        required: false
+        type: string
+        default: "--squash"
+
+jobs:
+  auto-merge:
+    name: Auto-merge Dependabot PR
+    runs-on: ubuntu-latest
+    # Only act on Dependabot-authored PRs. Without this guard any contributor
+    # could trigger this workflow.
+    if: github.actor == 'dependabot[bot]'
+    permissions:
+      contents: write         # required to enable auto-merge on the PR
+      pull-requests: write    # required to call gh pr merge
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@ffa630c65fa7e0ecfa0625b5ceda64399aea1b36 # v3.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for eligible update types
+        if: contains(inputs.allowed-update-types, steps.meta.outputs.update-type)
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          MERGE_METHOD: ${{ inputs.merge-method }}
+        run: |
+          echo "Update type: $UPDATE_TYPE"
+          echo "Merge method: $MERGE_METHOD"
+          echo "Enabling auto-merge for $PR_URL"
+          # `--auto` enqueues the merge; it fires once all required status
+          # checks pass. If checks fail, the PR stays open for review.
+          gh pr merge --auto $MERGE_METHOD "$PR_URL"
+
+      - name: Skip (major bump or unrecognized update type)
+        if: "!contains(inputs.allowed-update-types, steps.meta.outputs.update-type)"
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+        run: |
+          echo "Update type '$UPDATE_TYPE' is not in the auto-merge allowlist."
+          echo "PR will stay open for human review."
