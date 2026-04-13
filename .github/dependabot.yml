@@ -1,0 +1,15 @@
+version: 2
+
+updates:
+  # GitHub Actions — one grouped weekly PR covering all action bumps.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "UTC"
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
