@@ -1,20 +1,19 @@
 name: Weekly provenance audit
 
-# Weekly integrity check on all @mnemom/* npm packages: installs the current
-# `latest` of each into a scratch project and runs `npm audit signatures`,
-# which verifies both registry signatures and SLSA provenance attestations.
-# Fails loudly and (in the enabled version) opens an issue if any package has
-# regressed off provenance.
+# Weekly integrity check on all @mnemom/* npm packages:
+#   1. Installs every package into a scratch project
+#   2. Runs `npm audit signatures` (verifies registry signatures + SLSA attestations)
+#   3. Verifies each package's SLSA provenance source_repo and source_path match
+#      our expected Trusted Publisher configuration
+#   4. Opens a GitHub issue on any regression (deduplicated — won't spam)
 #
-# STATUS: DISABLED (workflow_dispatch only). Part of Scale Step 29a — will be
-# enabled (add schedule trigger + issue-opening step) in the follow-up step.
-# Shipped disabled alongside Step 29 so the file exists in the canonical location
-# and reviewers see the shape before we turn it on.
+# Enabled as part of Scale Step 29a. Runs Mondays at 08:00 UTC. Can also be
+# triggered manually via workflow_dispatch for ad-hoc checks after publishes.
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "0 8 * * 1"   # Mondays 08:00 UTC — enable in Step 29a
+  schedule:
+    - cron: "0 8 * * 1"   # Mondays 08:00 UTC
 
 permissions: {}
 
@@ -24,17 +23,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write    # for creating issue on regression
     steps:
       - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
         with:
           node-version: "24"
 
-      - name: Install all @mnemom/* packages into a scratch project
+      - name: Install all @mnemom/* packages
         run: |
           mkdir -p /tmp/audit && cd /tmp/audit
           npm init -y >/dev/null
+          # --save so npm audit signatures sees them in the manifest.
           # Keep this list in sync with org packages published under @mnemom/*.
-          npm install --no-save \
+          npm install --save --no-audit --no-fund \
             @mnemom/agent-alignment-protocol \
             @mnemom/agent-integrity-protocol \
             @mnemom/aip-otel-exporter \
@@ -42,15 +43,148 @@ jobs:
             @mnemom/mnemom \
             @mnemom/types
 
-      - name: npm audit signatures (verifies sigs + attestations)
+      - name: npm audit signatures
+        id: audit
         working-directory: /tmp/audit
         run: |
           set -o pipefail
           npm audit signatures 2>&1 | tee audit.out
-          # Fail the job if any @mnemom/* package is missing attestations.
-          # `npm audit signatures` exits non-zero on unverified signatures, but
-          # we also grep defensively in case npm's output format changes.
-          if grep -E "missing attestations|unverified" audit.out >/dev/null; then
-            echo "::error::One or more @mnemom/* packages failed provenance audit"
+
+          # npm audit signatures --json returns {invalid:[], missing:[]}.
+          # Both arrays should be empty for a clean audit.
+          npm audit signatures --json > audit.json 2>&1 || true
+
+          invalid=$(jq '.invalid | length' audit.json 2>/dev/null || echo "-1")
+          missing=$(jq '.missing | length' audit.json 2>/dev/null || echo "-1")
+
+          echo "invalid=$invalid" >> "$GITHUB_OUTPUT"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+
+          if [ "$invalid" != "0" ] || [ "$missing" != "0" ]; then
+            echo "::error::Provenance audit failed: $invalid invalid, $missing missing"
+            echo "audit_ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Signatures and attestations verified for all packages"
+            echo "audit_ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify Trusted Publisher source (SLSA provenance fields)
+        id: trusted-publisher
+        run: |
+          # Expected mapping: package → source repo + workflow path.
+          # If a package's latest provenance doesn't match, the Trusted
+          # Publisher config may have drifted or an unauthorized publish
+          # bypassed OIDC.
+          declare -A EXPECTED_REPOS=(
+            ["@mnemom/agent-alignment-protocol"]="https://github.com/mnemom/aap"
+            ["@mnemom/agent-integrity-protocol"]="https://github.com/mnemom/aip"
+            ["@mnemom/aip-otel-exporter"]="https://github.com/mnemom/aip-otel-exporter"
+            ["@mnemom/policy-engine"]="https://github.com/mnemom/mnemom-platform"
+            ["@mnemom/mnemom"]="https://github.com/mnemom/mnemom-platform"
+            ["@mnemom/types"]="https://github.com/mnemom/mnemom-types"
+          )
+          EXPECTED_PATH=".github/workflows/publish.yml"
+
+          failures=""
+          for pkg in "${!EXPECTED_REPOS[@]}"; do
+            expected_repo="${EXPECTED_REPOS[$pkg]}"
+
+            # Fetch attestation URL from registry
+            att_url=$(npm view "$pkg" dist.attestations.url 2>/dev/null || echo "")
+            if [ -z "$att_url" ]; then
+              echo "::warning::$pkg has no attestations URL"
+              failures="$failures\n- $pkg: no attestations URL on latest version"
+              continue
+            fi
+
+            # Extract SLSA provenance source fields
+            provenance=$(curl -sf "$att_url" | jq -r '
+              .attestations[]
+              | select(.predicateType == "https://slsa.dev/provenance/v1")
+              | .bundle.dsseEnvelope.payload
+              | @base64d | fromjson
+              | {
+                  repo: .predicate.buildDefinition.externalParameters.workflow.repository,
+                  path: .predicate.buildDefinition.externalParameters.workflow.path
+                }
+            ' 2>/dev/null || echo "")
+
+            if [ -z "$provenance" ]; then
+              echo "::warning::$pkg: could not extract SLSA provenance"
+              failures="$failures\n- $pkg: could not extract SLSA provenance from attestation"
+              continue
+            fi
+
+            actual_repo=$(echo "$provenance" | jq -r '.repo')
+            actual_path=$(echo "$provenance" | jq -r '.path')
+
+            if [ "$actual_repo" != "$expected_repo" ]; then
+              echo "::error::$pkg: source repo mismatch — expected $expected_repo, got $actual_repo"
+              failures="$failures\n- $pkg: repo mismatch (expected \`$expected_repo\`, got \`$actual_repo\`)"
+            elif [ "$actual_path" != "$EXPECTED_PATH" ]; then
+              echo "::error::$pkg: workflow path mismatch — expected $EXPECTED_PATH, got $actual_path"
+              failures="$failures\n- $pkg: path mismatch (expected \`$EXPECTED_PATH\`, got \`$actual_path\`)"
+            else
+              echo "$pkg: ✓ repo=$actual_repo path=$actual_path"
+            fi
+          done
+
+          if [ -n "$failures" ]; then
+            echo "tp_ok=false" >> "$GITHUB_OUTPUT"
+            # Write failures to a file so the issue step can read them
+            echo -e "$failures" > /tmp/tp-failures.txt
+          else
+            echo "tp_ok=true" >> "$GITHUB_OUTPUT"
+            echo "All packages verified against expected Trusted Publisher configuration"
+          fi
+
+      - name: Open issue on regression (deduplicated)
+        if: steps.audit.outputs.audit_ok == 'false' || steps.trusted-publisher.outputs.tp_ok == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Deduplicate: don't open a new issue if one is already open
+          existing=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --search "Provenance audit regression in:title is:open" \
+            --json number --jq 'length' 2>/dev/null || echo "0")
+
+          if [ "$existing" -gt "0" ]; then
+            echo "Existing open provenance-audit issue found — adding comment instead"
+            issue_num=$(gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --search "Provenance audit regression in:title is:open" \
+              --json number --jq '.[0].number')
+            gh issue comment "$issue_num" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "Provenance audit re-failed on $(date -u +%Y-%m-%d). Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             exit 1
           fi
+
+          # Build issue body
+          body="## Provenance audit regression — $(date -u +%Y-%m-%d)\n\n"
+          body+="**Run:** $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\n"
+
+          if [ "${{ steps.audit.outputs.audit_ok }}" = "false" ]; then
+            body+="### npm audit signatures\n"
+            body+="- Invalid signatures: ${{ steps.audit.outputs.invalid }}\n"
+            body+="- Missing attestations: ${{ steps.audit.outputs.missing }}\n\n"
+          fi
+
+          if [ "${{ steps.trusted-publisher.outputs.tp_ok }}" = "false" ] && [ -f /tmp/tp-failures.txt ]; then
+            body+="### Trusted Publisher verification\n"
+            body+="$(cat /tmp/tp-failures.txt)\n\n"
+          fi
+
+          body+="### Next steps\n"
+          body+="1. Check the workflow run log for specifics.\n"
+          body+="2. If a package was published without provenance: investigate the publish workflow for that repo.\n"
+          body+="3. If a repo/path mismatch: verify the npm Trusted Publisher config on npmjs.com matches the expected repo + \`.github/workflows/publish.yml\`.\n"
+          body+="4. Close this issue once resolved.\n"
+
+          echo -e "$body" | gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Provenance audit regression — $(date -u +%Y-%m-%d)" \
+            --body-file -
+
+          exit 1
