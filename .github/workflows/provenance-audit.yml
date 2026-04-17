@@ -40,6 +40,7 @@ jobs:
             @mnemom/agent-integrity-protocol \
             @mnemom/aip-otel-exporter \
             @mnemom/policy-engine \
+            @mnemom/team-coherence \
             @mnemom/mnemom \
             @mnemom/types
 
@@ -80,6 +81,7 @@ jobs:
             ["@mnemom/agent-integrity-protocol"]="https://github.com/mnemom/aip"
             ["@mnemom/aip-otel-exporter"]="https://github.com/mnemom/aip-otel-exporter"
             ["@mnemom/policy-engine"]="https://github.com/mnemom/mnemom-platform"
+            ["@mnemom/team-coherence"]="https://github.com/mnemom/mnemom-platform"
             ["@mnemom/mnemom"]="https://github.com/mnemom/mnemom-platform"
             ["@mnemom/types"]="https://github.com/mnemom/mnemom-types"
           )
