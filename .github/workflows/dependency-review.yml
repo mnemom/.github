@@ -25,7 +25,7 @@ jobs:
     name: Scan for Secrets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/dependency-review-action@v4
         with:
@@ -49,11 +49,11 @@ jobs:
     name: Package Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
         if: inputs.package-manager == 'npm' || inputs.package-manager == ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -66,7 +66,7 @@ jobs:
 
       - name: Setup Python
         if: inputs.package-manager == 'pip'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
