@@ -1,0 +1,140 @@
+name: Reusable — PyPI publish with provenance + SBOM
+
+# Canonical PyPI publish workflow for all mnemom-* Python packages.
+#
+# Called via `uses: mnemom/.github/.github/workflows/pypi-publish.yml@<sha>` from
+# a thin per-repo publish.yml. Mirror of npm-publish.yml for the Python side
+# of cross-language packages — owns the full supply-chain recipe:
+#   - Python 3.12 + actions/setup-python@v6 + python -m build
+#   - PyPA gh-action-pypi-publish with OIDC Trusted Publisher (no API token)
+#   - skip-existing: true → idempotent on already-published versions, mirroring
+#     the npm reusable's "already published — skipping" behavior. PyPI does not
+#     allow re-uploading the same version; the action handles the 409 cleanly.
+#   - CycloneDX SBOM generation + upload as workflow artifact
+#   - Conditional attach SBOM to GitHub Release when caller is release-triggered
+#
+# Why reusable: same rationale as npm-publish.yml (ADR-020) — prevents copies
+# in each per-repo publish.yml from drifting on Python version, build tooling,
+# or auth pattern. Source of truth is here.
+#
+# Trusted Publisher setup (one-time, per package):
+#   1. PyPI → Project → Settings → Publishing → Add a new pending publisher.
+#   2. Owner: mnemom, Repository: <repo>, Workflow filename: publish.yml,
+#      Environment: production (matches `environment: production` below).
+#   3. After the first successful publish, the pending publisher becomes
+#      a regular Trusted Publisher and OIDC tokens replace API tokens.
+
+on:
+  workflow_call:
+    inputs:
+      python-directory:
+        description: "Directory containing pyproject.toml to publish"
+        required: true
+        type: string
+      dispatch-id:
+        description: "Correlation ID from deploy orchestrator (optional)"
+        required: false
+        type: string
+      attach-sbom-to-release:
+        description: "When true AND caller was triggered by a release event, upload SBOM as a release asset"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.python-directory }}
+    permissions:
+      contents: write   # needed for gh release upload (release-triggered callers only)
+      id-token: write   # OIDC → PyPI Trusted Publisher
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Read package metadata
+        id: meta
+        working-directory: ${{ inputs.python-directory }}
+        run: |
+          PKG_NAME=$(python3 -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              print(tomllib.load(f)['project']['name'])
+          ")
+          PKG_VERSION=$(python3 -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              print(tomllib.load(f)['project']['version'])
+          ")
+          echo "pkg-name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+          echo "pkg-version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          # Sanitize for filesystem / artifact names — Python package names
+          # may contain dots; replace with dashes for SBOM artifact slug.
+          PKG_SLUG=$(echo "$PKG_NAME" | sed 's|\.|-|g; s|/|-|g')
+          echo "pkg-slug=$PKG_SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Check if already published
+        id: check
+        run: |
+          PKG_NAME="${{ steps.meta.outputs.pkg-name }}"
+          PKG_VERSION="${{ steps.meta.outputs.pkg-version }}"
+          # PyPI JSON API: /pypi/<name>/<version>/json returns 404 if missing.
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://pypi.org/pypi/${PKG_NAME}/${PKG_VERSION}/json")
+          if [ "$STATUS" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "${PKG_NAME}@${PKG_VERSION} already published — skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Will publish ${PKG_NAME}@${PKG_VERSION}"
+          fi
+
+      - name: Build sdist + wheel
+        if: steps.check.outputs.skip != 'true'
+        working-directory: ${{ inputs.python-directory }}
+        run: python -m build
+
+      - name: Publish to PyPI (Trusted Publisher)
+        if: steps.check.outputs.skip != 'true'
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          packages-dir: ${{ inputs.python-directory }}/dist/
+          # skip-existing is a belt-and-suspenders for race conditions where
+          # two runs publish the same version concurrently. The check step
+          # above is the primary guard.
+          skip-existing: true
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: ${{ inputs.python-directory }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          # Match npm-publish.yml's posture: own the upload + naming so we
+          # stay consistent across npm/PyPI SBOM artifacts.
+          upload-release-assets: false
+          upload-artifact: false
+
+      - name: Upload SBOM as workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ steps.meta.outputs.pkg-slug }}-${{ steps.meta.outputs.pkg-version }}-pypi
+          path: sbom.cdx.json
+
+      - name: Attach SBOM to GitHub Release
+        if: ${{ github.event_name == 'release' && inputs.attach-sbom-to-release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ASSET_NAME="sbom-${{ steps.meta.outputs.pkg-slug }}-${{ steps.meta.outputs.pkg-version }}-pypi.cdx.json"
+          cp sbom.cdx.json "$ASSET_NAME"
+          gh release upload "${{ github.event.release.tag_name }}" "$ASSET_NAME" --clobber
