@@ -19,7 +19,7 @@ jobs:
       ORG: mnemom
       REPOS: ${{ inputs.repos || 'mnemom-platform,mnemom-api,mnemom-reputation,mnemom-risk,deploy,mnemom-contracts,mnemom-prover,aip,aap,mnemom-types,aip-otel-exporter,mnemom-website,reputation-check,hunter' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Run hardening checks
         env:
