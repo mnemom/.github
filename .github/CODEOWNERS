@@ -1,0 +1,8 @@
+# Organization-wide default code owner.
+#
+# This file lives in mnemom/.github, so it applies as the DEFAULT CODEOWNERS
+# for every repository in the organization that does not define its own
+# .github/CODEOWNERS. A repo that ships its own CODEOWNERS overrides this.
+#
+# Matches the existing per-repo precedent (mnemom/aap, mnemom/mnemom-platform).
+* @alexgarden
