@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a defect in a mnemom repository
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please do **not** include secrets,
+        access tokens, or other sensitive data. For security vulnerabilities, follow
+        [SECURITY.md](https://github.com/mnemom/.github/blob/main/SECURITY.md) instead
+        of opening a public issue.
+  - type: input
+    id: repo
+    attributes:
+      label: Affected repository / package
+      description: Which repo (and version, if known) does this affect?
+      placeholder: "e.g. mnemom/aip @ 1.2.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and the impact.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, deterministic steps. Include a code snippet or command if possible.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, runtime/SDK version, and any other relevant context.
+      placeholder: "e.g. macOS 15.5, Node 22.x, @mnemom/agent-integrity-protocol 0.4.1"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant log output. This will be rendered as code, so no backticks needed. Redact secrets.
+      render: shell
+    validations:
+      required: false
