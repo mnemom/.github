@@ -36,6 +36,11 @@ on:
         required: false
         type: boolean
         default: true
+      provenance:
+        description: "Publish with npm/sigstore provenance. Requires a PUBLIC source repo — npm rejects provenance from a private repo (E422). Set false for private-source repos. OIDC Trusted Publisher auth is independent of this and still works when false."
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   publish:
@@ -97,7 +102,10 @@ jobs:
       - name: Publish
         if: steps.check.outputs.skip != 'true'
         working-directory: ${{ inputs.npm-directory }}
-        run: npm publish --access public --provenance --tag "${{ inputs.tag }}"
+        # --provenance is gated on `inputs.provenance` (default true). npm rejects
+        # provenance from a PRIVATE source repo (E422), so private-source callers
+        # pass provenance:false; OIDC Trusted Publisher auth still works without it.
+        run: npm publish --access public ${{ inputs.provenance && '--provenance' || '' }} --tag "${{ inputs.tag }}"
 
       - name: Generate SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
