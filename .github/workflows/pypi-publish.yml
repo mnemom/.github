@@ -70,10 +70,15 @@ jobs:
           with open('pyproject.toml', 'rb') as f:
               print(tomllib.load(f)['project']['name'])
           ")
+          # Resolve the version through the build backend's metadata hook so it
+          # works whether the version is static (`project.version`) OR dynamic
+          # (`dynamic = ["version"]` — e.g. hatch `_version.py`, hatch-vcs,
+          # setuptools-scm). A plain tomllib `['project']['version']` read
+          # KeyErrors on dynamic-version packages. `build` is already installed
+          # above; project_wheel_metadata runs prepare_metadata only (no wheel).
           PKG_VERSION=$(python3 -c "
-          import tomllib
-          with open('pyproject.toml', 'rb') as f:
-              print(tomllib.load(f)['project']['version'])
+          from build.util import project_wheel_metadata
+          print(project_wheel_metadata('.', isolated=True)['Version'])
           ")
           echo "pkg-name=$PKG_NAME" >> "$GITHUB_OUTPUT"
           echo "pkg-version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
