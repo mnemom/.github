@@ -85,7 +85,7 @@ jobs:
           fi
           cd "${{ inputs.npm-directory }}"
           if [ -f pnpm-lock.yaml ] || [ -f ../../pnpm-workspace.yaml ]; then
-            pnpm run build --if-present
+            pnpm run --if-present build
           else
             npm run build --if-present
           fi
