@@ -1,0 +1,216 @@
+name: Reusable — internal npm publish to GitHub Packages
+
+# Canonical publish workflow for INTERNAL @mnemom/* npm packages — the ones that
+# never go to the public registry (mu SDK, billing-ui, and anything else that is
+# core payments/infra). Sibling of npm-publish.yml, which owns PUBLIC packages.
+#
+# Called via `uses: mnemom/.github/.github/workflows/internal-npm-publish.yml@<sha>`
+# from a thin per-repo publish.yml. Owns the whole internal recipe so the estate
+# has ONE place to harden (ADR-020's rule, extended to the internal plane).
+#
+# ── Three deliberate differences from the public recipe ──────────────────────
+#
+# 1. Registry + auth: npm.pkg.github.com with GITHUB_TOKEN (packages: write).
+#    No OIDC Trusted Publisher — that is an npmjs.com concept. Authz follows
+#    GitHub org membership instead, which is the whole point of the internal
+#    plane.
+#
+# 2. `--access restricted`, never `public`. A slip to public would leak the
+#    payments engine's API surface, which is the reason these packages are
+#    internal in the first place.
+#
+# 3. Provenance is GITHUB ATTESTATIONS, not npm/sigstore provenance.
+#    npm --provenance is an npmjs.com feature and additionally rejects private
+#    source repos with E422 (see npm-publish.yml's `provenance` input). So the
+#    internal plane attests the built TARBALL with actions/attest-build-provenance,
+#    which is registry-agnostic and works identically for wheels and images —
+#    one trust primitive across every ecosystem we ship.
+#
+# ── The step that did not exist before (why this workflow was written) ───────
+#
+# `verify-published`: after publishing, RE-RESOLVE the exact version from the
+# registry and fail if it is absent. Without it, "the workflow was green" and
+# "the artifact exists" are different claims. mnemom-packages shipped
+# mnemom-mu-v0.2.0 and mu-engine-v1.0.0 as ✓ success / 6s runs that published
+# NOTHING (the caller's router silently matched no package), and the version RG
+# pins in production came from one of them. A publish workflow must prove the
+# artifact landed, not that no step errored.
+
+on:
+  workflow_call:
+    inputs:
+      npm-directory:
+        description: "Directory containing package.json to publish"
+        required: true
+        type: string
+      dispatch-id:
+        description: "Correlation ID from deploy orchestrator (optional)"
+        required: false
+        type: string
+      attach-sbom-to-release:
+        description: "When true AND caller was release-triggered, upload the SBOM as a release asset"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.npm-directory }} → GitHub Packages
+    permissions:
+      contents: write # gh release upload (release-triggered callers)
+      packages: write # GitHub Packages publish
+      id-token: write # attestations (Sigstore signing via OIDC)
+      attestations: write # actions/attest-build-provenance
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4
+
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: "24"
+          registry-url: "https://npm.pkg.github.com"
+
+      - name: Install and build
+        run: |
+          set -euo pipefail
+          # Workspace-aware: internal packages live in pnpm monorepos, so install
+          # at the repo root and build only the target package.
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile
+          else
+            npm ci || npm install
+          fi
+          cd "${{ inputs.npm-directory }}"
+          if [ -f pnpm-lock.yaml ] || [ -f ../../pnpm-workspace.yaml ]; then
+            pnpm run build --if-present
+          else
+            npm run build --if-present
+          fi
+
+      - name: Read package metadata
+        id: meta
+        working-directory: ${{ inputs.npm-directory }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          {
+            echo "pkg-name=$PKG_NAME"
+            echo "pkg-version=$PKG_VERSION"
+            # Sanitized for artifact names: strip leading @, / -> - (see npm-publish.yml).
+            echo "pkg-slug=$(echo "$PKG_NAME" | sed 's|^@||; s|/|-|g')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check if already published
+        id: check
+        working-directory: ${{ inputs.npm-directory }}
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NAME="${{ steps.meta.outputs.pkg-name }}"
+          VERSION="${{ steps.meta.outputs.pkg-version }}"
+          PUBLISHED=$(npm view "${NAME}@${VERSION}" version --registry=https://npm.pkg.github.com 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${NAME}@${VERSION} already on GitHub Packages — idempotent no-op."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack tarball (the exact bytes we publish + attest)
+        if: steps.check.outputs.skip != 'true'
+        id: pack
+        working-directory: ${{ inputs.npm-directory }}
+        run: |
+          set -euo pipefail
+          # Attest and publish the SAME artifact. `npm publish <tarball>` uploads
+          # these exact bytes, so the attestation subject is what consumers get —
+          # attesting the source directory instead would attest something nobody
+          # downloads.
+          TARBALL=$(npm pack --json | node -p "JSON.parse(require('fs').readFileSync(0,'utf8'))[0].filename")
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "tarball-path=${{ inputs.npm-directory }}/$TARBALL" >> "$GITHUB_OUTPUT"
+          sha256sum "$TARBALL" | tee "$TARBALL.sha256"
+
+      - name: Attest build provenance
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball-path }}
+
+      - name: Publish to GitHub Packages
+        if: steps.check.outputs.skip != 'true'
+        working-directory: ${{ inputs.npm-directory }}
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        # --access restricted: internal packages must NEVER become public.
+        run: npm publish "${{ steps.pack.outputs.tarball }}" --access restricted --registry=https://npm.pkg.github.com
+
+      # ── The claim this workflow actually makes ──────────────────────────────
+      - name: Verify the version resolves from the registry
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NAME="${{ steps.meta.outputs.pkg-name }}"
+          VERSION="${{ steps.meta.outputs.pkg-version }}"
+          # Runs on BOTH paths — including the idempotent skip — because "already
+          # published" is itself a claim worth checking. Registry indexing can lag
+          # a publish by a moment, so retry briefly before failing.
+          for attempt in 1 2 3 4 5; do
+            RESOLVED=$(npm view "${NAME}@${VERSION}" version --registry=https://npm.pkg.github.com 2>/dev/null || echo "")
+            if [ "$RESOLVED" = "$VERSION" ]; then
+              echo "::notice::verified ${NAME}@${VERSION} resolves from GitHub Packages."
+              exit 0
+            fi
+            echo "attempt ${attempt}: not resolvable yet; retrying..."
+            sleep 5
+          done
+          echo "::error::${NAME}@${VERSION} does NOT resolve from GitHub Packages after publish. The run would otherwise have reported success having published nothing."
+          exit 1
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: ${{ inputs.npm-directory }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-release-assets: false
+          upload-artifact: false
+
+      - name: Upload SBOM as workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ steps.meta.outputs.pkg-slug }}-${{ steps.meta.outputs.pkg-version }}
+          path: sbom.cdx.json
+
+      - name: Attach SBOM to GitHub Release
+        if: ${{ github.event_name == 'release' && inputs.attach-sbom-to-release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ASSET="sbom-${{ steps.meta.outputs.pkg-slug }}-${{ steps.meta.outputs.pkg-version }}.cdx.json"
+          cp sbom.cdx.json "$ASSET"
+          gh release upload "${{ github.event.release.tag_name }}" "$ASSET" --clobber
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published \`${{ steps.meta.outputs.pkg-name }}@${{ steps.meta.outputs.pkg-version }}\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| registry | \`npm.pkg.github.com\` (internal) |"
+            echo "| access | \`restricted\` |"
+            echo "| already present | \`${{ steps.check.outputs.skip }}\` |"
+            echo "| attested | \`${{ steps.check.outputs.skip != 'true' }}\` |"
+            echo "| registry-resolve verified | \`true\` |"
+            [ -n "${{ inputs.dispatch-id }}" ] && echo "| dispatch-id | \`${{ inputs.dispatch-id }}\` |"
+            echo ""
+            echo "Verify locally: \`gh attestation verify --owner ${{ github.repository_owner }} <tarball>\`"
+          } >> "$GITHUB_STEP_SUMMARY"
