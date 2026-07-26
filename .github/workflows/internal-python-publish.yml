@@ -1,0 +1,191 @@
+name: Reusable — internal Python publish to GitHub Release assets
+
+# Canonical publish workflow for INTERNAL Python packages — the ones that must
+# not go to PyPI (the mu SDK and anything else in the payments path).
+#
+# ── Why this exists at all: GitHub Packages has no Python registry ───────────
+#
+# Verified against GitHub's own docs: GitHub Packages supports npm, RubyGems,
+# Maven, Gradle, NuGet and Docker. Python is NOT among them. So "GHP is our
+# canonical internal distro" cannot be literally true for Python, and pretending
+# otherwise is how the gap survived: mnemom-mu had NO publish path, and RG
+# installs it in production from a MUTABLE GIT TAG —
+#
+#   mnemom-mu @ git+https://github.com/mnemom/mnemom-packages@mnemom-mu-v0.2.0
+#
+# A force-pushed tag silently changes payments code on the next image build, and
+# nothing would notice. A tag is not a release artifact.
+#
+# ── What this does instead ───────────────────────────────────────────────────
+#
+# Build sdist + wheel → attest the wheel → attach both plus a SHA256SUMS file to
+# the GitHub Release as IMMUTABLE assets → verify the assets are actually there.
+# No PyPI, no new registry, no new infrastructure: GitHub Releases are already
+# immutable per tag and already authz'd by repo access.
+#
+# Consumers pin the artifact, not a ref:
+#   gh release download <tag> -p '*.whl' -R <owner>/<repo>
+#   gh attestation verify <wheel> --owner <owner>
+#   pip install ./<wheel>
+#
+# Attestation is actions/attest-build-provenance — the SAME primitive the
+# internal npm recipe uses, deliberately, so the trust story is one story across
+# ecosystems rather than a different mechanism per registry.
+#
+# ── If we ever outgrow this ──────────────────────────────────────────────────
+# Two escape hatches, in order of preference, neither justified by ONE internal
+# Python package: (a) OCI artifact in GHCR via ORAS — literally one registry for
+# npm + containers + python, at the cost of an `oras` binary in every builder;
+# (b) a private PEP 503 index — real infrastructure, real operational surface.
+# Revisit at the third internal Python package.
+
+on:
+  workflow_call:
+    inputs:
+      python-directory:
+        description: "Directory containing pyproject.toml to build"
+        required: true
+        type: string
+      release-tag:
+        description: "Release tag to attach assets to. Empty = do not attach (dispatch runs with no release)."
+        required: false
+        type: string
+        default: ""
+      dispatch-id:
+        description: "Correlation ID from deploy orchestrator (optional)"
+        required: false
+        type: string
+      python-version:
+        description: "Python version to build with"
+        required: false
+        type: string
+        default: "3.12"
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.python-directory }} → Release assets
+    permissions:
+      contents: write # gh release upload
+      id-token: write # attestations (Sigstore signing via OIDC)
+      attestations: write # actions/attest-build-provenance
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Read package metadata
+        id: meta
+        working-directory: ${{ inputs.python-directory }}
+        run: |
+          set -euo pipefail
+          NAME=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+          VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          {
+            echo "pkg-name=$NAME"
+            echo "pkg-version=$VERSION"
+            # PEP 427/503: distribution names normalise - and . to _ in wheel filenames.
+            echo "dist-name=$(echo "$NAME" | tr '.-' '__')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build sdist + wheel
+        working-directory: ${{ inputs.python-directory }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip build
+          python -m build
+          ls -l dist/
+
+      - name: Checksums
+        id: sums
+        working-directory: ${{ inputs.python-directory }}/dist
+        run: |
+          set -euo pipefail
+          # Shipped as an asset so a consumer can pin by hash without trusting the
+          # download path, and so a silently-replaced asset is detectable.
+          sha256sum ./* | sed 's|\./||' | tee SHA256SUMS
+          # Glob, not `ls` — a single wheel is expected; more than one means the
+          # build produced platform variants we are not prepared to attach.
+          wheels=(./*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "::error::expected exactly 1 wheel, found ${#wheels[@]}: ${wheels[*]}"
+            exit 1
+          fi
+          WHEEL="${wheels[0]#./}"
+          {
+            echo "wheel=$WHEEL"
+            echo "wheel-sha256=$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance (the wheel consumers install)
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ inputs.python-directory }}/dist/*.whl
+
+      - name: Import smoke test against the BUILT wheel
+        working-directory: ${{ inputs.python-directory }}
+        run: |
+          set -euo pipefail
+          # Install the artifact itself, not the source tree — this is the last
+          # point at which a wheel that cannot be imported is still cheap to catch.
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet "dist/${{ steps.sums.outputs.wheel }}"
+          MODULE=$(echo "${{ steps.meta.outputs.pkg-name }}" | tr '-' '_')
+          /tmp/smoke/bin/python -c "import ${MODULE}; print('import OK:', ${MODULE}.__name__)"
+
+      - name: Upload dist as workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ steps.meta.outputs.pkg-name }}-${{ steps.meta.outputs.pkg-version }}
+          path: ${{ inputs.python-directory }}/dist/
+
+      - name: Attach artifacts to the GitHub Release
+        if: inputs.release-tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ${{ inputs.python-directory }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ inputs.release-tag }}" dist/* --clobber
+          printf '::notice::attached %s to %s\n' "$(printf '%s ' dist/*)" "${{ inputs.release-tag }}"
+
+      # ── The claim this workflow actually makes ──────────────────────────────
+      - name: Verify the wheel is present on the Release
+        if: inputs.release-tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WHEEL="${{ steps.sums.outputs.wheel }}"
+          ASSETS=$(gh release view "${{ inputs.release-tag }}" --json assets --jq '.assets[].name')
+          echo "assets on ${{ inputs.release-tag }}:"; echo "$ASSETS"
+          if ! echo "$ASSETS" | grep -Fxq "$WHEEL"; then
+            echo "::error::${WHEEL} is NOT attached to ${{ inputs.release-tag }} — the run would otherwise have reported success having published nothing."
+            exit 1
+          fi
+          echo "::notice::verified ${WHEEL} is attached to ${{ inputs.release-tag }}."
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published \`${{ steps.meta.outputs.pkg-name }} ${{ steps.meta.outputs.pkg-version }}\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| target | GitHub Release assets (no PyPI) |"
+            echo "| wheel | \`${{ steps.sums.outputs.wheel }}\` |"
+            echo "| sha256 | \`${{ steps.sums.outputs.wheel-sha256 }}\` |"
+            echo "| release | \`${{ inputs.release-tag || '(dispatch — not attached)' }}\` |"
+            echo "| attested | \`true\` |"
+            [ -n "${{ inputs.dispatch-id }}" ] && echo "| dispatch-id | \`${{ inputs.dispatch-id }}\` |"
+            echo ""
+            echo "**Consume it:**"
+            echo '```bash'
+            echo "gh release download ${{ inputs.release-tag }} -p '*.whl' -R ${{ github.repository }}"
+            echo "gh attestation verify ${{ steps.sums.outputs.wheel }} --owner ${{ github.repository_owner }}"
+            echo "pip install ./${{ steps.sums.outputs.wheel }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
