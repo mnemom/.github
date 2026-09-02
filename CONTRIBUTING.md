@@ -2,6 +2,18 @@
 
 Thank you for your interest in contributing. This guide covers conventions used across all repositories in the mnemom organization.
 
+## Creating a New Repository
+
+New repositories default to the **`mnemom-labs`** org (R&D). A repo graduates to the **`mnemom`** org (production) only after it clears the enterprise-readiness bar: a test environment running beside prod, off ad-hoc/one-off infra, monitoring and alerting in place, and confirmed in SOC2 scope. The `mnemom` org is kept clean for SOC2 — only live, in-scope, deployed services and real shipped public packages belong there.
+
+When scaffolding, default to `mnemom-labs`:
+
+```
+gh repo create mnemom-labs/<name> --private
+```
+
+Promote to `mnemom` only once the readiness bar above is met. Source decision: MNE-6778 (repo consolidation).
+
 ## Branch Naming
 
 Use a prefix that describes the type of change:
