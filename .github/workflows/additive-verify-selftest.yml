@@ -1,0 +1,36 @@
+name: additive-verify selftest
+
+# Locks the additive discriminator's calibration in CI. The fixtures are the real
+# base/head blobs of mnemom-platform#680 (additive) and #749 / mnemom-risk#155 /
+# mnemom-risk#161 (behavior changes). If a tweak to analyze.mjs ever re-classifies
+# #680 as needs-review or any of the three behavior PRs as additive, this fails.
+
+on:
+  pull_request:
+    paths:
+      - ".github/actions/additive-verify/**"
+      - ".github/workflows/additive-verify-selftest.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/actions/additive-verify/**"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  selftest:
+    name: Calibration self-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: .github/actions/additive-verify
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm test

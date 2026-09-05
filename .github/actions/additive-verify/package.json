@@ -1,0 +1,13 @@
+{
+  "name": "additive-verify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Structural additive discriminator for ADW-bot PRs (review-waiver signal).",
+  "scripts": {
+    "test": "node test/selftest.mjs"
+  },
+  "dependencies": {
+    "typescript": "5.9.3"
+  }
+}
