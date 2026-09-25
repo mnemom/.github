@@ -18,6 +18,8 @@ jobs:
   prepare:
     name: Prepare language matrix
     runs-on: ubuntu-latest
+    # Builds the matrix from inputs only: no checkout, no API calls.
+    permissions: {}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
