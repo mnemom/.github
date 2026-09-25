@@ -15,6 +15,10 @@ jobs:
   sweep:
     name: Hardening Sweep
     runs-on: ubuntu-latest
+    # GITHUB_TOKEN only backs actions/checkout; every org API call uses
+    # secrets.ORG_ADMIN_TOKEN, which these permissions do not affect.
+    permissions:
+      contents: read
     env:
       ORG: mnemom
       REPOS: ${{ inputs.repos || 'mnemom-platform,mnemom-api,mnemom-reputation,mnemom-risk,deploy,mnemom-contracts,mnemom-prover,aip,aap,mnemom-types,aip-otel-exporter,mnemom-website,reputation-check,hunter' }}
