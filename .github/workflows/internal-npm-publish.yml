@@ -66,7 +66,28 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4
+      # pnpm/action-setup throws "No pnpm version is specified" when it has no `version`
+      # input and package.json names neither a `pnpm@` packageManager nor a pnpm
+      # devEngines.packageManager (src/install-pnpm/run.ts:108-180 at the pinned sha). An
+      # npm-only caller (packageManager npm@…, a package-lock.json, no pnpm files) therefore
+      # failed here, before the npm branches below were reached. So the step runs only when
+      # one of the exact files those branches test for exists; pnpm repos are unchanged.
+      - name: Detect pnpm
+        id: pm
+        env:
+          NPM_DIRECTORY: ${{ inputs.npm-directory }}
+        run: |
+          set -euo pipefail
+          if [ -f pnpm-lock.yaml ] || [ -f pnpm-workspace.yaml ] \
+            || [ -f "$NPM_DIRECTORY/pnpm-lock.yaml" ] || [ -f "$NPM_DIRECTORY/../../pnpm-workspace.yaml" ]; then
+            echo "pnpm=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pnpm=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No pnpm lockfile or workspace: skipping pnpm setup; installing with npm."
+          fi
+
+      - if: steps.pm.outputs.pnpm == 'true'
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4
 
       - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
         with:
