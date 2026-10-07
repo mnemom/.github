@@ -5,4 +5,4 @@
 # .github/CODEOWNERS. A repo that ships its own CODEOWNERS overrides this.
 #
 # Matches the existing per-repo precedent (mnemom/aap, mnemom/mnemom-platform).
-* @alexgarden
+* @alexgarden-mnemom
