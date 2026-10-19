@@ -1,0 +1,55 @@
+# additive-verify per-repo config — copy to .github/additive-verify.yml in the
+# target repo to override defaults. All keys optional; omitted keys use the
+# defaults baked into analyze.mjs (DEFAULT_CONFIG). Globs match the repo-relative
+# POSIX path; `*` = one segment, `**` = any depth.
+
+# Files treated as application SOURCE -> Tier B (TypeScript AST analysis).
+source_globs:
+  - "**/src/**/*.ts"
+  - "**/src/**/*.tsx"
+  - "**/src/**/*.js"
+  - "**/src/**/*.mjs"
+
+# Paths that are NEVER source even under src/ (tests/fixtures route to Tier A).
+source_excludes:
+  - "**/__tests__/**"
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/fixtures/**"
+
+# Tier A — additive-safe ONLY when the file is newly ADDED (status=added).
+# A *modified* lockfile / wrangler.toml / package.json / config, or an *edited*
+# existing test, is intentionally NOT here: editing it can change a dependency,
+# a runtime binding, or weaken a guard — i.e. behavior. Those fall through to
+# the fail-closed default and require review.
+additive_added_globs:
+  - "**/*.md"
+  - "**/*.mdx"
+  - "app_docs/**"
+  - "docs/**"
+  - "**/runbook*"
+  - "**/RUNBOOK*"
+  - "**/dashboards/**"
+  - "**/*.dashboard.json"
+  - "**/__tests__/**"
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test/**"
+  - "**/tests/**"
+
+# Tier A — additive-safe even when MODIFIED (prose/markdown only).
+additive_modified_globs:
+  - "**/*.md"
+  - "**/*.mdx"
+  - "app_docs/**"
+  - "docs/**"
+  - "**/runbook*"
+  - "**/RUNBOOK*"
+
+# Policy knob: when true, a brand-NEW source file also requires review (most
+# conservative). Default false — a new source file adds code but cannot, on its
+# own, rewrite existing behavior; any edit that WIRES it into an existing flow
+# would surface as a Tier-B violation on the modified existing file.
+new_source_needs_review: false

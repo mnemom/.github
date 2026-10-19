@@ -1,0 +1,63 @@
+name: additive-verify
+
+# Reusable workflow: publishes the `additive-verify` commit status on a PR.
+#
+# A target repo wires this in with a thin caller (see docs/additive-verify.md):
+#
+#   # .github/workflows/additive-verify.yml in the target repo
+#   name: additive-verify
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened]
+#   jobs:
+#     additive-verify:
+#       uses: mnemom/.github/.github/workflows/additive-verify.yml@main
+#
+# IMPORTANT: this workflow ONLY computes + reports a status. It does NOT merge
+# and it does NOT modify any branch-protection rule or ruleset. Granting the
+# ADW-bot a review waiver conditioned on this status being green is a deliberate
+# HUMAN step (org admin), specified in docs/additive-verify.md.
+
+on:
+  workflow_call:
+    inputs:
+      check-name:
+        description: "Status context name (must match the branch-protection / ruleset bypass condition)."
+        required: false
+        default: "additive-verify"
+        type: string
+
+permissions: {}
+
+jobs:
+  additive-verify:
+    name: additive-verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read         # read base/head blobs
+      pull-requests: read     # list changed files
+    steps:
+      - name: Checkout (head) for repo config + the analyzer
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # The analyzer lives in mnemom/.github; check it out into a side path so
+      # the action.yml + analyze.mjs are available regardless of the caller repo.
+      - name: Checkout shared additive-verify action
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: mnemom/.github
+          ref: main
+          path: .additive-verify-action
+          sparse-checkout: |
+            .github/actions/additive-verify
+
+      - name: additive-verify
+        id: verify
+        uses: ./.additive-verify-action/.github/actions/additive-verify
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          github-token: ${{ github.token }}

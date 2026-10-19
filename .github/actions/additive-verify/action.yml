@@ -1,0 +1,45 @@
+name: "additive-verify"
+description: >
+  Structural additive discriminator for ADW-bot PRs. Asserts a PR changes NO
+  behavior/control-flow (additive instrumentation, docs, dashboards, new tests
+  only) so a required human review may be safely waived. Fail-closed: any doubt
+  => NEEDS-REVIEW. Computes a status only; never merges, never edits protection.
+inputs:
+  pr-number:
+    description: "PR number to analyze."
+    required: true
+  base-sha:
+    description: "Base (target-branch) commit SHA."
+    required: true
+  head-sha:
+    description: "Head (PR tip) commit SHA."
+    required: true
+  github-token:
+    description: "Token with pull_requests:read + contents:read."
+    required: true
+outputs:
+  additive:
+    description: "'true' when the PR is verified additive (review waivable), else 'false'."
+    value: ${{ steps.verify.outputs.additive }}
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: "20"
+    - name: Install analyzer deps (typescript only)
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci --omit=dev || npm install --omit=dev
+    - name: Run additive discriminator
+      id: verify
+      shell: bash
+      run: node "${{ github.action_path }}/run.mjs"
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        GITHUB_WORKSPACE: ${{ github.workspace }}
