@@ -53,4 +53,4 @@ All repositories enforce branch protection on `main`:
 
 ## Code of Conduct
 
-Be respectful and constructive in all interactions. We are building together.
+Be respectful and constructive in all interactions. We are building together. Pull requests opened by coding agents through mnemom agent carry a Mnemom record.
