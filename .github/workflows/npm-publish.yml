@@ -105,7 +105,46 @@ jobs:
         # --provenance is gated on `inputs.provenance` (default true). npm rejects
         # provenance from a PRIVATE source repo (E422), so private-source callers
         # pass provenance:false; OIDC Trusted Publisher auth still works without it.
-        run: npm publish --access public ${{ inputs.provenance && '--provenance' || '' }} --tag "${{ inputs.tag }}"
+        #
+        # Idempotent against a concurrent publish of the same version. npm stages a new
+        # version for several minutes before `npm view` serves it (mnemom-platform: 4 to
+        # 6 minutes in 4 of 4 runs on 2026-11-15/16), so a second run dispatched in that
+        # window passes the check above and its PUT gets E409 "Cannot publish over
+        # previously staged version" (mnemom-platform run 43787709115). That E409 (or
+        # the older E403 "cannot publish over the previously published versions", if the
+        # version became visible after the check) means the version already exists, the
+        # same outcome the check above skips on, so it is a no-op once npm serves the
+        # version. Any other failure, or a version npm does not serve within
+        # PUBLISHED_WAIT_SECONDS, still fails the job.
+        env:
+          PKG_NAME: ${{ steps.check.outputs.pkg-name }}
+          PKG_VERSION: ${{ steps.check.outputs.pkg-version }}
+          TAG: ${{ inputs.tag }}
+          PROVENANCE: ${{ inputs.provenance }}
+          PUBLISHED_WAIT_SECONDS: "900"
+        run: |
+          set -uo pipefail
+          args=(--access public --tag "$TAG")
+          if [ "$PROVENANCE" = "true" ]; then args+=(--provenance); fi
+          LOG="$RUNNER_TEMP/npm-publish.log"
+          if npm publish "${args[@]}" 2>&1 | tee "$LOG"; then
+            exit 0
+          fi
+          if ! grep -Eq 'E40[39]' "$LOG" \
+            || ! grep -Eiq 'cannot publish over (the )?previously (published|staged) version' "$LOG"; then
+            exit 1
+          fi
+          echo "${PKG_NAME}@${PKG_VERSION} already exists on npm (published by another run). Waiting up to ${PUBLISHED_WAIT_SECONDS}s for npm to serve it."
+          deadline=$((SECONDS + PUBLISHED_WAIT_SECONDS))
+          until [ "$(npm view "${PKG_NAME}@${PKG_VERSION}" version 2>/dev/null || true)" = "$PKG_VERSION" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::npm refused to publish over ${PKG_NAME}@${PKG_VERSION} but did not serve that version within ${PUBLISHED_WAIT_SECONDS}s, so this run cannot confirm it is published."
+              exit 1
+            fi
+            sleep 20
+          done
+          GIT_HEAD=$(npm view "${PKG_NAME}@${PKG_VERSION}" gitHead 2>/dev/null || echo unknown)
+          echo "::notice::${PKG_NAME}@${PKG_VERSION} is on npm, published by another run from ${GIT_HEAD} (this run: ${GITHUB_SHA}). Idempotent no-op."
 
       - name: Generate SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
