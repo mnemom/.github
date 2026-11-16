@@ -1,0 +1,38 @@
+name: Test npm-publish Publish step
+
+# Runs the `Publish` step of npm-publish.yml against a stub `npm`
+# (.github/scripts/test-npm-publish-step.sh): the normal publish argv with and without
+# provenance, the concurrent-publish E409/E403 no-op once npm serves the version, and the
+# failures that must still fail. Callers pin npm-publish.yml by SHA, so this is the only
+# check that runs the step before a caller repins to it.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/npm-publish.yml"
+      - ".github/workflows/test-npm-publish.yml"
+      - ".github/scripts/test-npm-publish-step.sh"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/npm-publish.yml"
+      - ".github/workflows/test-npm-publish.yml"
+      - ".github/scripts/test-npm-publish-step.sh"
+
+permissions: {}
+
+jobs:
+  publish-step:
+    name: Publish step (stub npm)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the Publish step against a stub npm
+        # yq (mikefarah v4) is preinstalled on ubuntu-latest.
+        run: .github/scripts/test-npm-publish-step.sh .github/workflows/npm-publish.yml
